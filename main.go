@@ -30,5 +30,3 @@ func main() {
 	var c Controller
 	c.processItem()
 }
-
-git commit -am "Commit message"
