@@ -1,5 +1,5 @@
 # Globalizer
-Kubernetes controller which to globalize your application to the world.
+Globalizer is a kubernetes controller which to globalize your application to the world.
 
 ## Crux
 This controller automatically creates service and ingress resource when you deploy your application using deployment resource, and removes the service and ingress as soon as you delete your deployment. The controller leverages client-go, api and apimachinery libraries in order to implement the given functionality.
