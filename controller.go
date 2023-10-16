@@ -7,6 +7,8 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	netv1 "k8s.io/api/networking/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	appsinformers "k8s.io/client-go/informers/apps/v1"
@@ -16,7 +18,7 @@ import (
 	"k8s.io/client-go/util/workqueue"
 )
 
-type Controller struct {
+type controller struct {
 	clientset      kubernetes.Interface
 	depLister      appslisters.DeploymentLister
 	depCacheSynced cache.InformerSynced
@@ -24,7 +26,7 @@ type Controller struct {
 }
 
 func newController(clientset kubernetes.Interface, depInformer appsinformers.DeploymentInformer) *controller {
-	c := &Controller{
+	c := &controller{
 		clientset:      clientset,
 		depLister:      depInformer.Lister(),
 		depCacheSynced: depInformer.Informer().HasSynced,
@@ -41,10 +43,10 @@ func newController(clientset kubernetes.Interface, depInformer appsinformers.Dep
 	return c
 }
 
-func (c *Controller) run(ch <-chan struct{}) {
+func (c *controller) run(ch <-chan struct{}) {
 	fmt.Println("starting controller")
 	if !cache.WaitForCacheSync(ch, c.depCacheSynced) {
-		fmt.Print("waiting for cache to be synced\n")
+		fmt.Print("waiting for cache to be synced aka k8s resources being flooded for the watch api to work\n")
 	}
 
 	go wait.Until(c.worker, 1*time.Second, ch)
@@ -52,13 +54,13 @@ func (c *Controller) run(ch <-chan struct{}) {
 	<-ch
 }
 
-func (c *Controller) worker() {
+func (c *controller) worker() {
 	for c.processItem() {
 
 	}
 }
 
-func (c *Controller) processItem() bool {
+func (c *controller) processItem() bool {
 	item, shutdown := c.queue.Get()
 	if shutdown {
 		return false
@@ -66,13 +68,34 @@ func (c *Controller) processItem() bool {
 	defer c.queue.Forget(item)
 	key, err := cache.MetaNamespaceKeyFunc(item)
 	if err != nil {
-		fmt.Printf("getting key from cahce %s\n", err.Error())
+		fmt.Printf("getting key from cache %s\n", err.Error())
 	}
 
 	ns, name, err := cache.SplitMetaNamespaceKey(key)
 	if err != nil {
 		fmt.Printf("splitting key into namespace and name %s\n", err.Error())
 		return false
+	}
+
+	// check if the object has been deleted from k8s cluster
+	ctx := context.Background()
+	_, err = c.clientset.AppsV1().Deployments(ns).Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		fmt.Printf("handle delete event for dep %s\n", name)
+		// delete service
+		err := c.clientset.CoreV1().Services(ns).Delete(ctx, name, metav1.DeleteOptions{})
+		if err != nil {
+			fmt.Printf("deleting service %s, error %s\n", name, err.Error())
+			return false
+		}
+
+		err = c.clientset.NetworkingV1().Ingresses(ns).Delete(ctx, name, metav1.DeleteOptions{})
+		if err != nil {
+			fmt.Printf("deleting ingrss %s, error %s\n", name, err.Error())
+			return false
+		}
+
+		return true
 	}
 
 	err = c.syncDeployment(ns, name)
@@ -84,16 +107,13 @@ func (c *Controller) processItem() bool {
 	return true
 }
 
-func (c *Controller) syncDeployment(ns, name string) error {
+func (c *controller) syncDeployment(ns, name string) error {
 	ctx := context.Background()
 
 	dep, err := c.depLister.Deployments(ns).Get(name)
 	if err != nil {
 		fmt.Printf("getting deployment from lister %s\n", err.Error())
 	}
-	// create service
-	// we have to modify this, to figure out the port
-	// our deployment's container is listening on
 	svc := corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      dep.Name,
@@ -109,24 +129,63 @@ func (c *Controller) syncDeployment(ns, name string) error {
 			},
 		},
 	}
-	_, err = c.clientset.CoreV1().Services(ns).Create(ctx, &svc, metav1.CreateOptions{})
+	s, err := c.clientset.CoreV1().Services(ns).Create(ctx, &svc, metav1.CreateOptions{})
 	if err != nil {
-		fmt.Printf("creating service %s\n", err.Error())
+		fmt.Printf("error %s creating service\n", err.Error())
 	}
 	// create ingress
-	return nil
+	return createIngress(ctx, c.clientset, s)
+}
+
+func createIngress(ctx context.Context, client kubernetes.Interface, svc *corev1.Service) error {
+	pathType := "Prefix"
+	ingress := netv1.Ingress{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      svc.Name,
+			Namespace: svc.Namespace,
+			Annotations: map[string]string{
+				"nginx.ingress.kubernetes.io/rewrite-target": "/",
+			},
+		},
+		Spec: netv1.IngressSpec{
+			Rules: []netv1.IngressRule{
+				netv1.IngressRule{
+					IngressRuleValue: netv1.IngressRuleValue{
+						HTTP: &netv1.HTTPIngressRuleValue{
+							Paths: []netv1.HTTPIngressPath{
+								netv1.HTTPIngressPath{
+									Path:     fmt.Sprintf("/%s", svc.Name),
+									PathType: (*netv1.PathType)(&pathType),
+									Backend: netv1.IngressBackend{
+										Service: &netv1.IngressServiceBackend{
+											Name: svc.Name,
+											Port: netv1.ServiceBackendPort{
+												Number: 80,
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	_, err := client.NetworkingV1().Ingresses(svc.Namespace).Create(ctx, &ingress, metav1.CreateOptions{})
+	return err
 }
 
 func depLabels(dep appsv1.Deployment) map[string]string {
 	return dep.Spec.Template.Labels
 }
 
-func (c *Controller) handleAdd(obj interface{}) {
+func (c *controller) handleAdd(obj interface{}) {
 	fmt.Println("add was called")
 	c.queue.Add(obj)
 }
 
-func (c *Controller) handleDel(obj interface{}) {
+func (c *controller) handleDel(obj interface{}) {
 	fmt.Println("del was called")
 	c.queue.Add(obj)
 }

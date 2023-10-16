@@ -12,21 +12,26 @@ import (
 )
 
 func main() {
-	kubeconfig := flag.String("kubeconfig", "/Users/rootxrishabh/.kube/config", "location to your kubeconfig file")
-	config, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
+	kubeconfig := flag.String("kubeconfig", "/", "location to your kubeconfig file")
+	config, err := clientcmd.BuildConfigFromFlags("/Users/rootxrishabh/.kube/config", *kubeconfig)
 	if err != nil {
-		fmt.Printf("Error %s while building config from hostOS\n", err.Error())
+		// handle error
+		fmt.Printf("erorr %s building config from flags\n", err.Error())
 		config, err = rest.InClusterConfig()
-		if err != nil{
-			fmt.Printf("Error %s building config from cluster\n", err.Error())
+		if err != nil {
+			fmt.Printf("error %s, getting inclusterconfig", err.Error())
 		}
 	}
-
 	clientset, err := kubernetes.NewForConfig(config)
-	if err != nil{
-		fmt.Printf("Error %s while building clientset\n", err.Error())
+	if err != nil {
+		// handle error
+		fmt.Printf("error %s, creating clientset\n", err.Error())
 	}
 
-	var c Controller
-	c.processItem()
+	ch := make(chan struct{})
+	informers := informers.NewSharedInformerFactory(clientset, 10*time.Minute)
+	c := newController(clientset, informers.Apps().V1().Deployments())
+	informers.Start(ch)
+	c.run(ch)
+	fmt.Println(informers)
 }
