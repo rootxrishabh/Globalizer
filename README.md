@@ -13,3 +13,5 @@ This controller automatically creates service and ingress resource when you depl
 3) Service account, cluster role and cluster role binding are created to grant permissions to the custom controller.
 4) Deployment is created and the controller is deployed.
 
+### Controller architecture
+![image](https://github.com/rootxrishabh/Globalizer/assets/73490663/acbbcafe-f883-4ef1-b49c-d1ce47c80965)
