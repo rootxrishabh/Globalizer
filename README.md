@@ -8,7 +8,7 @@ This controller automatically creates service and ingress resource when you depl
 `make deploy` will take care of everything as long as you have a k8s cluster running : )
 
 ## Installation logic
-1) Nginx-load-balancer is deployed as a component to create ingress
+1) Nginx-load-balancer is deployed as a component to create ingress.
 2) Namespace is created to allocate upcoming deployment.
 3) Service account, cluster role and cluster role binding are created to grant permissions to the custom controller.
 4) Deployment is created and the controller is deployed.
